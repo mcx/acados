@@ -1,9 +1,9 @@
 
-function ocp = create_ocp_formulation(p_global, m, l, C, lut, use_p_global, p_global_values)
+function ocp = create_ocp_formulation_without_opts(p_global, m, l, coefficients, knots, lut, use_p_global, p_global_values, blazing)
     ocp = AcadosOcp();
 
     % Set model
-    model = export_pendulum_ode_model(p_global, m, l, C, lut);
+    model = export_pendulum_ode_model(p_global, m, l, coefficients, knots, lut, blazing);
     model.p_global = p_global;
     ocp.model = model;
 
@@ -43,19 +43,6 @@ function ocp = create_ocp_formulation(p_global, m, l, C, lut, use_p_global, p_gl
 
     ocp.constraints.x0 = [0.0; pi; 0.0; 0.0];
 
-    % Set options
-    Tf = 1.0;
-    N_horizon = 20;
-
-    ocp.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM';
-    ocp.solver_options.hessian_approx = 'GAUSS_NEWTON';
-    ocp.solver_options.integrator_type = 'ERK';
-    ocp.solver_options.print_level = 0;
-    ocp.solver_options.nlp_solver_type = 'SQP_RTI';
-
-    ocp.solver_options.tf = Tf;
-    ocp.solver_options.N_horizon = N_horizon;
-
     % Parameters
     ocp.parameter_values = 9.81;
 
@@ -63,11 +50,13 @@ function ocp = create_ocp_formulation(p_global, m, l, C, lut, use_p_global, p_gl
         model.p = vertcat(model.p, p_global);
         model.p_global = [];
         ocp.parameter_values = [ocp.parameter_values; p_global_values];
+    else
+        ocp.p_global_values = p_global_values;
     end
 end
 
 
-function model = export_pendulum_ode_model(p_global, m, l, C, lut)
+function model = export_pendulum_ode_model(p_global, m, l, coefficients, knots, lut, blazing)
     import casadi.*
     model_name = 'pendulum';
 
@@ -99,9 +88,16 @@ function model = export_pendulum_ode_model(p_global, m, l, C, lut)
                      (-m*l*cos_theta*sin_theta*dtheta^2 + F*cos_theta + (m_cart + m)*g*sin_theta) / (l*denominator));
 
     if lut
-        knots = {[0,0,0,0,0.2,0.5,0.8,1,1,1,1],[0,0,0,0.1,0.5,0.9,1,1,1]};
         x_in = vertcat(u/100 + 0.5, theta/pi + 0.5);
-        f_expl(3:4) = f_expl(3:4) + 0.01*bspline(x_in, C, knots, [3, 2], 2);
+        if blazing
+            % NOTE: blazing_spline requires CasADi version nightly-se2 or later,
+            % as well as additional flags for the CasADi code generation,
+            % cf. the solver option ext_fun_compile_flags
+            spline_fun = blazing_spline('blazing_spline', knots);
+            f_expl(4) = f_expl(4) + 0.01*spline_fun(x_in, coefficients);
+        else
+            f_expl(4) = f_expl(4) + 0.01*bspline(x_in, coefficients, knots, [3, 3], 1);
+        end
     end
 
     model = AcadosModel();

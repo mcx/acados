@@ -37,6 +37,7 @@ classdef AcadosOcp < handle
         solver_options
         model
         parameter_values % initial value of the parameter
+        p_global_values % initial value of the parameter
         acados_include_path
         acados_lib_path
         problem_class
@@ -47,7 +48,8 @@ classdef AcadosOcp < handle
         shared_lib_ext
         name
         zoro_description
-        casadi_pool_names
+        external_function_files_ocp
+        external_function_files_model
     end
     methods
         function obj = AcadosOcp()
@@ -58,6 +60,7 @@ classdef AcadosOcp < handle
             obj.model = AcadosModel();
 
             obj.parameter_values = [];
+            obj.p_global_values = [];
             obj.problem_class = 'OCP';
             obj.simulink_opts = [];
             obj.cython_include_dirs = [];
@@ -88,7 +91,10 @@ classdef AcadosOcp < handle
             end
         end
 
-        function make_consistent(self)
+        function make_consistent(self, is_mocp_phase)
+            if nargin < 2
+                is_mocp_phase = false;
+            end
             self.model.make_consistent(self.dims);
 
             model = self.model;
@@ -99,6 +105,11 @@ classdef AcadosOcp < handle
 
             N = opts.N_horizon;
             self.detect_cost_and_constraints();
+
+            % check if nx != nx_next
+            if ~is_mocp_phase && dims.nx ~= dims.nx_next && opts.N_horizon > 1
+                error(['nx_next = ', num2str(dims.nx_next), ' must be equal to nx = ', num2str(dims.nx), ' if more than one shooting interval is used.']);
+            end
 
             % detect GNSF structure
             if strcmp(opts.integrator_type, 'GNSF')
@@ -122,7 +133,19 @@ classdef AcadosOcp < handle
                 end
                 self.parameter_values = zeros(self.dims.np,1);
             elseif length(self.parameter_values) ~= self.dims.np
-                error(['parameters_values has the wrong shape. Expected: ' num2str(self.dims.np)])
+                error(['parameter_values has the wrong shape. Expected: ' num2str(self.dims.np)])
+            end
+
+
+            % parameters
+            if isempty(self.p_global_values)
+                if dims.np_global > 0
+                    warning(['self.p_global_values are not set.', ...
+                            10 'Using zeros(np_global,1) by default.' 10 'You can update them later using set().']);
+                end
+                self.p_global_values = zeros(self.dims.np_global,1);
+            elseif length(self.p_global_values) ~= self.dims.np_global
+                error(['p_global_values has the wrong shape. Expected: ' num2str(self.dims.np_global)])
             end
 
             %% cost
@@ -241,6 +264,9 @@ classdef AcadosOcp < handle
                 if nbx_0 ~= length(constraints.ubx_0) || nbx_0 ~= length(constraints.idxbx_0)
                     error('inconsistent dimension nbx_0, regarding idxbx_0, lbx_0, ubx_0.');
                 end
+                if min(constraints.idxbx_0) < 0 || max(constraints.idxbx_0) > (dims.nx-1)
+                    error(['idxbx_0 should contain (zero-based) indices between 0 and ', num2str(dims.nx-1)])
+                end
             elseif ~isempty(constraints.idxbx_0) || ~isempty(constraints.lbx_0) || ~isempty(constraints.ubx_0)
                 error('setting bounds on x: need idxbx_0, lbx_0, ubx_0, at least one missing.');
             else
@@ -250,19 +276,16 @@ classdef AcadosOcp < handle
             end
             dims.nbx_0 = nbx_0;
 
-            if ~isempty(constraints.idxbxe_0)
-                dims.nbxe_0 = length(constraints.idxbxe_0);
-            else
-                % no equalities on initial state.
-                constraints.idxbxe_0 = [];
-                dims.nbxe_0 = 0;
-            end
+            dims.nbxe_0 = length(constraints.idxbxe_0);
 
             % path
             if ~isempty(constraints.idxbx) && ~isempty(constraints.lbx) && ~isempty(constraints.ubx)
                 nbx = length(constraints.lbx);
                 if nbx ~= length(constraints.ubx) || nbx ~= length(constraints.idxbx)
                     error('inconsistent dimension nbx, regarding idxbx, lbx, ubx.');
+                end
+                if min(constraints.idxbx) < 0 || max(constraints.idxbx) > (dims.nx-1)
+                    error(['idxbx should contain (zero-based) indices between 0 and ', num2str(dims.nx-1)])
                 end
             elseif ~isempty(constraints.idxbx) || ~isempty(constraints.lbx) || ~isempty(constraints.ubx)
                 error('setting bounds on x: need idxbx, lbx, ubx, at least one missing.');
@@ -275,6 +298,9 @@ classdef AcadosOcp < handle
                 nbu = length(constraints.lbu);
                 if nbu ~= length(constraints.ubu) || nbu ~= length(constraints.idxbu)
                     error('inconsistent dimension nbu, regarding idxbu, lbu, ubu.');
+                end
+                if min(constraints.idxbu) < 0 || max(constraints.idxbu) > (dims.nu-1)
+                    error(['idxbu should contain (zero-based) indices between 0 and ', num2str(dims.nu-1)])
                 end
             elseif ~isempty(constraints.idxbu) || ~isempty(constraints.lbu) || ~isempty(constraints.ubu)
                 error('setting bounds on u: need idxbu, lbu, ubu, at least one missing.');
@@ -331,6 +357,9 @@ classdef AcadosOcp < handle
                 if nbx_e ~= length(constraints.ubx_e) || nbx_e ~= length(constraints.idxbx_e)
                     error('inconsistent dimension nbx_e, regarding Jbx_e, lbx_e, ubx_e.');
                 end
+                if min(constraints.idxbx_e) < 0 || max(constraints.idxbx_e) > (dims.nx-1)
+                    error(['idxbx_e should contain (zero-based) indices between 0 and ', num2str(dims.nx-1)])
+                end
             elseif ~isempty(constraints.idxbx_e) || ~isempty(constraints.lbx_e) || ~isempty(constraints.ubx_e)
                 error('setting bounds on x: need Jbx_e, lbx_e, ubx_e, at least one missing.');
             else
@@ -367,46 +396,31 @@ classdef AcadosOcp < handle
             dims.nh_e = nh_e;
 
             %% slack dimensions
-            if ~isempty(constraints.idxsbx)
-                nsbx = length(constraints.idxsbx);
-            else
-                nsbx = 0;
-            end
-
-            if ~isempty(constraints.idxsbu)
-                nsbu = length(constraints.idxsbu);
-            else
-                nsbu = 0;
-            end
-
-            if ~isempty(constraints.idxsg)
-                nsg = length(constraints.idxsg);
-            else
-                nsg = 0;
-            end
-            if ~isempty(constraints.idxsh)
-                nsh = length(constraints.idxsh);
-            else
-                nsh = 0;
-            end
-            if ~isempty(constraints.idxsphi)
-                nsphi = length(constraints.idxsphi);
-            else
-                nsphi = 0;
-            end
+            nsbx = length(constraints.idxsbx);
+            nsbu = length(constraints.idxsbu);
+            nsg = length(constraints.idxsg);
+            nsh = length(constraints.idxsh);
+            nsphi = length(constraints.idxsphi);
 
             ns = nsbx + nsbu + nsg + nsh + nsphi;
             wrong_field = '';
-            if ~isempty(cost.Zl) && ~all(size(cost.Zl) == [ns, 1])
+
+            if ns == 0
+                expected_shape = [0, 0];
+            else
+                expected_shape = [ns, 1];
+            end
+
+            if ~all(size(cost.Zl) == expected_shape)
                 wrong_field = 'Zl';
                 dim = size(cost.Zl);
-            elseif ~isempty(cost.Zu) && ~all(size(cost.Zu) == [ns, 1])
+            elseif ~all(size(cost.Zu) == expected_shape)
                 wrong_field = 'Zu';
                 dim = size(cost.Zu);
-            elseif ~isempty(cost.zl) && ~all(size(cost.zl) == [ns, 1])
+            elseif ~all(size(cost.zl) == expected_shape)
                 wrong_field = 'zl';
                 dim = size(cost.zl);
-            elseif ~isempty(cost.zu) && ~all(size(cost.zu) == [ns, 1])
+            elseif ~all(size(cost.zu) == expected_shape)
                 wrong_field = 'zu';
                 dim = size(cost.zu);
             end
@@ -435,29 +449,27 @@ classdef AcadosOcp < handle
             dims.nsphi = nsphi;
 
             % slacks at initial stage
-            if ~isempty(constraints.idxsh_0)
-                nsh_0 = length(constraints.idxsh_0);
-            else
-                nsh_0 = 0;
-            end
-            if ~isempty(constraints.idxsphi_0)
-                nsphi_0 = length(constraints.idxsphi_0);
-            else
-                nsphi_0 = 0;
-            end
+            nsh_0 = length(constraints.idxsh_0);
+            nsphi_0 = length(constraints.idxsphi_0);
 
             ns_0 = nsbu + nsg + nsh_0 + nsphi_0;
             wrong_field = '';
-            if ~isempty(cost.Zl_0) && ~all(size(cost.Zl_0) == [ns_0, 1])
+            if ns_0 == 0
+                expected_shape = [0, 0];
+            else
+                expected_shape = [ns_0, 1];
+            end
+
+            if ~all(size(cost.Zl_0) == expected_shape)
                 wrong_field = 'Zl_0';
                 dim = size(cost.Zl_0);
-            elseif ~isempty(cost.Zu_0) && ~all(size(cost.Zu_0) == [ns_0, 1])
+            elseif ~all(size(cost.Zu_0) == expected_shape)
                 wrong_field = 'Zu_0';
                 dim = size(cost.Zu_0);
-            elseif ~isempty(cost.zl_0) && ~all(size(cost.zl_0) == [ns_0, 1])
+            elseif ~all(size(cost.zl_0) == expected_shape)
                 wrong_field = 'zl_0';
                 dim = size(cost.zl_0);
-            elseif ~isempty(cost.zu_0) && ~all(size(cost.zu_0) == [ns_0, 1])
+            elseif ~all(size(cost.zu_0) == expected_shape)
                 wrong_field = 'zu_0';
                 dim = size(cost.zu_0);
             end
@@ -478,40 +490,29 @@ classdef AcadosOcp < handle
             dims.nsphi_0 = nsphi_0;
 
             %% terminal slack dimensions
-            if ~isempty(constraints.idxsbx_e)
-                nsbx_e = length(constraints.idxsbx_e);
-            else
-                nsbx_e = 0;
-            end
-
-            if ~isempty(constraints.idxsg_e)
-                nsg_e = length(constraints.idxsg_e);
-            else
-                nsg_e = 0;
-            end
-            if ~isempty(constraints.idxsh_e)
-                nsh_e = length(constraints.idxsh_e);
-            else
-                nsh_e = 0;
-            end
-            if ~isempty(constraints.idxsphi_e)
-                nsphi_e = length(constraints.idxsphi_e);
-            else
-                nsphi_e = 0;
-            end
+            nsbx_e = length(constraints.idxsbx_e);
+            nsg_e = length(constraints.idxsg_e);
+            nsh_e = length(constraints.idxsh_e);
+            nsphi_e = length(constraints.idxsphi_e);
 
             ns_e = nsbx_e + nsg_e + nsh_e + nsphi_e;
             wrong_field = '';
-            if ~isempty(cost.Zl_e) && ~all(size(cost.Zl_e) == [ns_e, 1])
+            if ns_e == 0
+                expected_shape = [0, 0];
+            else
+                expected_shape = [ns_e, 1];
+            end
+
+            if ~all(size(cost.Zl_e) == expected_shape)
                 wrong_field = 'Zl_e';
                 dim = size(cost.Zl_e);
-            elseif ~isempty(cost.Zu_e) && ~all(size(cost.Zu_e) == [ns_e, 1])
+            elseif ~all(size(cost.Zu_e) == expected_shape)
                 wrong_field = 'Zu_e';
                 dim = size(cost.Zu_e);
-            elseif ~isempty(cost.zl_e) && ~all(size(cost.zl_e) == [ns_e, 1])
+            elseif ~all(size(cost.zl_e) == expected_shape)
                 wrong_field = 'zl_e';
                 dim = size(cost.zl_e);
-            elseif ~isempty(cost.zu_e) && ~all(size(cost.zu_e) == [ns_e, 1])
+            elseif ~all(size(cost.zu_e) == expected_shape)
                 wrong_field = 'zu_e';
                 dim = size(cost.zu_e);
             end
@@ -593,6 +594,18 @@ classdef AcadosOcp < handle
                 error(['ocp discretization: time_steps between shooting nodes must all be > 0', ...
                     ' got: ' num2str(opts.time_steps)])
             end
+
+            % cost_scaling
+            if isempty(opts.cost_scaling)
+                opts.cost_scaling = [opts.time_steps(:); 1.0];
+            elseif length(opts.cost_scaling) ~= N+1
+                error(['cost_scaling must have length N+1 = ', num2str(N+1)]);
+            end
+
+            % set integrator time automatically
+            opts.Tsim = opts.time_steps(1);
+
+            % integrator: num_stages
             if ~isempty(opts.sim_method_num_stages)
                 if(strcmp(opts.integrator_type, "ERK"))
                     if (any(opts.sim_method_num_stages < 1) || any(opts.sim_method_num_stages > 4))
@@ -600,9 +613,6 @@ classdef AcadosOcp < handle
                     end
                 end
             end
-
-            % set integrator time automatically
-            opts.Tsim = opts.time_steps(1);
 
             % qpdunes
             if ~isempty(strfind(opts.qp_solver,'qpdunes'))
@@ -680,43 +690,50 @@ classdef AcadosOcp < handle
             end
 
             % Set default parameters for globalization
-            if isempty(opts.alpha_min)
-                if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
-                    opts.alpha_min = 1e-17;
+            ddp_with_merit_or_funnel = strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH') || (strcmp(opts.globalization, 'MERIT_BACKTRACKING') && strcmp(opts.nlp_solver_type, 'DDP'));
+
+            if isempty(opts.globalization_alpha_min)
+                % if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
+                if ddp_with_merit_or_funnel
+                    opts.globalization_alpha_min = 1e-17;
                 else
-                    opts.alpha_min = 0.05;
+                    opts.globalization_alpha_min = 0.05;
                 end
             end
 
-            if isempty(opts.alpha_reduction)
-                if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
-                    opts.alpha_reduction = 0.5;
+            if isempty(opts.globalization_alpha_reduction)
+                % if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
+                if ddp_with_merit_or_funnel
+                    opts.globalization_alpha_reduction = 0.5;
                 else
-                    opts.alpha_reduction = 0.7;
+                    opts.globalization_alpha_reduction = 0.7;
                 end
             end
 
-            if isempty(opts.eps_sufficient_descent)
-                if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
-                    opts.eps_sufficient_descent = 1e-6;
+            if isempty(opts.globalization_eps_sufficient_descent)
+                % if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
+                if ddp_with_merit_or_funnel
+                    opts.globalization_eps_sufficient_descent = 1e-6;
                 else
-                    opts.eps_sufficient_descent = 1e-4;
+                    opts.globalization_eps_sufficient_descent = 1e-4;
                 end
             end
 
             if isempty(opts.eval_residual_at_max_iter)
-                if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
+                % if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
+                if ddp_with_merit_or_funnel
                     opts.eval_residual_at_max_iter = true;
                 else
                     opts.eval_residual_at_max_iter = false;
                 end
             end
 
-            if isempty(opts.full_step_dual)
-                if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
-                    opts.full_step_dual = 1;
+            if isempty(opts.globalization_full_step_dual)
+                % if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
+                if ddp_with_merit_or_funnel
+                    opts.globalization_full_step_dual = 1;
                 else
-                    opts.full_step_dual = 0;
+                    opts.globalization_full_step_dual = 0;
                 end
             end
 
@@ -727,57 +744,58 @@ classdef AcadosOcp < handle
 
             % termination
             if isempty(opts.nlp_solver_tol_min_step_norm)
-                if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
+                % if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
+                if ddp_with_merit_or_funnel
                     opts.nlp_solver_tol_min_step_norm = 1e-12;
                 else
                     opts.nlp_solver_tol_min_step_norm = 0.0;
                 end
             end
 
+            %% Deprecated / migrated options
+            if ~isempty(opts.nlp_solver_step_length)
+                warning('nlp_solver_step_length is deprecated, use globalization_fixed_step_length instead.');
+                if opts.globalization_fixed_step_length ~= 1.0
+                    error('nlp_solver_step_length and globalization_fixed_step_length are both set, please use only globalization_fixed_step_length.');
+                end
+                opts.globalization_fixed_step_length = opts.nlp_solver_step_length;
+            end
+
             % Set default parameters for globalization
-            if isempty(opts.alpha_min)
-                if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
-                    opts.alpha_min = 1e-17;
+            if isempty(opts.globalization_alpha_min)
+                % if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
+                if ddp_with_merit_or_funnel
+                    opts.globalization_alpha_min = 1e-17;
                 else
-                    opts.alpha_min = 0.05;
+                    opts.globalization_alpha_min = 0.05;
                 end
             end
 
-            if isempty(opts.alpha_reduction)
-                if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
-                    opts.alpha_reduction = 0.5;
+            if isempty(opts.globalization_alpha_reduction)
+                % if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
+                if ddp_with_merit_or_funnel
+                    opts.globalization_alpha_reduction = 0.5;
                 else
-                    opts.alpha_reduction = 0.7;
+                    opts.globalization_alpha_reduction = 0.7;
                 end
             end
 
-            if isempty(opts.eps_sufficient_descent)
-                if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
-                    opts.eps_sufficient_descent = 1e-6;
+            if isempty(opts.globalization_eps_sufficient_descent)
+                % if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
+                if ddp_with_merit_or_funnel
+                    opts.globalization_eps_sufficient_descent = 1e-6;
                 else
-                    opts.eps_sufficient_descent = 1e-4;
+                    opts.globalization_eps_sufficient_descent = 1e-4;
                 end
             end
 
-            if isempty(opts.eval_residual_at_max_iter)
-                if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
-                    opts.eval_residual_at_max_iter = true;
+            if isempty(opts.globalization_full_step_dual)
+                % if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
+                if ddp_with_merit_or_funnel
+                    opts.globalization_full_step_dual = 1;
                 else
-                    opts.eval_residual_at_max_iter = false;
+                    opts.globalization_full_step_dual = 0;
                 end
-            end
-
-            if isempty(opts.full_step_dual)
-                if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH')
-                    opts.full_step_dual = 1;
-                else
-                    opts.full_step_dual = 0;
-                end
-            end
-
-            % sanity check for Funnel globalization and SQP
-            if strcmp(opts.globalization, 'FUNNEL_L1PEN_LINESEARCH') strcmp(opts.nlp_solver_type, 'SQP')
-                error('FUNNEL_L1PEN_LINESEARCH only supports SQP.')
             end
 
             if isa(self.zoro_description, 'ZoroDescription')
@@ -828,7 +846,7 @@ classdef AcadosOcp < handle
             constraint_types = {self.constraints.constr_type_0, self.constraints.constr_type, self.constraints.constr_type_e};
             for n=1:3
                 if strcmp(constraint_types{n}, 'AUTO')
-                    detect_constr(self.model, self.constraints, stage_types{n});
+                    detect_constraint_structure(self.model, self.constraints, stage_types{n});
                 end
             end
         end
@@ -836,10 +854,7 @@ classdef AcadosOcp < handle
         function context = generate_external_functions(ocp, context)
 
             %% generate C code for CasADi functions / copy external functions
-            cost = ocp.cost;
             solver_opts = ocp.solver_options;
-            constraints = ocp.constraints;
-            dims = ocp.dims;
 
             if nargin < 2
                 % options for code generation
@@ -848,10 +863,25 @@ classdef AcadosOcp < handle
                 code_gen_opts.with_solution_sens_wrt_params = solver_opts.with_solution_sens_wrt_params;
                 code_gen_opts.with_value_sens_wrt_params = solver_opts.with_value_sens_wrt_params;
                 code_gen_opts.code_export_directory = ocp.code_export_directory;
+                code_gen_opts.ext_fun_expand = ocp.solver_options.ext_fun_expand;
+
                 context = GenerateContext(ocp.model.p_global, ocp.name, code_gen_opts);
             else
                 code_gen_opts = context.opts;
             end
+            context = setup_code_generation_context(ocp, context, false, false);
+            context.finalize();
+            ocp.external_function_files_model = context.get_external_function_file_list(false);
+            ocp.external_function_files_ocp = context.get_external_function_file_list(true);
+            ocp.dims.n_global_data = context.get_n_global_data();
+        end
+
+        function context = setup_code_generation_context(ocp, context, ignore_initial, ignore_terminal)
+            code_gen_opts = context.opts;
+            solver_opts = ocp.solver_options;
+            constraints = ocp.constraints;
+            cost = ocp.cost;
+            dims = ocp.dims;
 
             % dynamics
             model_dir = fullfile(pwd, code_gen_opts.code_export_directory, [ocp.name '_model']);
@@ -859,6 +889,7 @@ classdef AcadosOcp < handle
             if strcmp(ocp.model.dyn_ext_fun_type, 'generic')
                 check_dir_and_create(model_dir);
                 copyfile(fullfile(pwd, ocp.model.dyn_generic_source), model_dir);
+                context.add_external_function_file(ocp.model.dyn_generic_source, model_dir);
             elseif strcmp(ocp.model.dyn_ext_fun_type, 'casadi')
                 check_casadi_version();
                 switch solver_opts.integrator_type
@@ -882,6 +913,16 @@ classdef AcadosOcp < handle
                 error('Unknown dyn_ext_fun_type.')
             end
 
+            if ignore_initial && ignore_terminal
+                stage_type_indices = [2];
+            elseif ignore_terminal
+                stage_type_indices = [1, 2];
+            elseif ignore_initial
+                stage_type_indices = [2, 3];
+            else
+                stage_type_indices = [1, 2, 3];
+            end
+
             stage_types = {'initial', 'path', 'terminal'};
 
             % cost
@@ -889,10 +930,12 @@ classdef AcadosOcp < handle
             cost_ext_fun_types = {cost.cost_ext_fun_type_0, cost.cost_ext_fun_type, cost.cost_ext_fun_type_e};
             cost_dir = fullfile(pwd, ocp.code_export_directory, [ocp.name '_cost']);
 
-            for i = 1:3
+            for n = 1:length(stage_type_indices)
+
+                i = stage_type_indices(n);
                 if strcmp(cost_ext_fun_types{i}, 'generic')
                     if strcmp(cost_types{i}, 'EXTERNAL')
-                        setup_generic_cost(cost, cost_dir, stage_types{i})
+                        setup_generic_cost(context, cost, cost_dir, stage_types{i})
                     else
                         error('Unknown cost_type for cost_ext_fun_types generic: got %s', cost_types{i});
                     end
@@ -921,7 +964,8 @@ classdef AcadosOcp < handle
             constraints_dims = {dims.nh_0, dims.nh, dims.nh_e};
             constraints_dir = fullfile(pwd, ocp.code_export_directory, [ocp.name '_constraints']);
 
-            for i = 1:3
+            for n = 1:length(stage_type_indices)
+                i = stage_type_indices(n);
                 if strcmp(constraints_types{i}, 'BGH') && constraints_dims{i} > 0
                     generate_c_code_nonlinear_constr(context, ocp.model, constraints_dir, stage_types{i});
                 end
@@ -1021,8 +1065,14 @@ classdef AcadosOcp < handle
                     template_list{end+1} = {fullfile(matlab_template_path, 'acados_sim_solver_sfun.in.c'), ['acados_sim_solver_sfunction_', self.name, '.c']};
                     template_list{end+1} = {fullfile(matlab_template_path, 'make_sfun_sim.in.m'), ['make_sfun_sim.m']};
                 end
+                if self.simulink_opts.inputs.rti_phase && ~strcmp(self.solver_options.nlp_solver_type, 'SQP_RTI')
+                    error('rti_phase is only supported for SQP_RTI');
+                end
+                if self.simulink_opts.outputs.KKT_residuals && strcmp(self.solver_options.nlp_solver_type, 'SQP_RTI')
+                    warning('KKT_residuals now computes the residuals of the output iterate in SQP_RTI, this leads to increased computation time, turn off this port if it is not needed. See https://github.com/acados/acados/pull/1346.');
+                end
             else
-                disp("not rendering Simulink related templates, as simulink_opts are not specified.")
+                disp("Not rendering Simulink-related templates, as simulink_opts are not specified.")
             end
         end
 
@@ -1054,6 +1104,7 @@ classdef AcadosOcp < handle
 
             % prepare struct for json dump
             out_struct.parameter_values = reshape(num2cell(self.parameter_values), [1, self.dims.np]);
+            out_struct.p_global_values = reshape(num2cell(self.p_global_values), [1, self.dims.np_global]);
             out_struct.model = orderfields(self.model.convert_to_struct_for_json_dump());
             out_struct.dims = orderfields(out_struct.dims.struct());
             out_struct.cost = orderfields(out_struct.cost.convert_to_struct_for_json_dump());

@@ -33,37 +33,44 @@
 #define ACADOS_UTILS_STRSEP_H_
 
 #ifdef __cplusplus
-#include <string>
-#define STD(x) std::x
-namespace std
-{
-#else
-#include <string.h>
-#define STD(x) x
+extern "C" {
 #endif
 
-char* strsep_acados(char** stringp, const char* delim)
+#include <string.h>
+
+// Inline function definition
+static inline void extract_module_name(const char *module_field, char *module, int *module_length, char **ptr_module)
 {
-    char* result;
+    // extract module name from string of the form <module>_<field>
+    char *char_ = strchr(module_field, '_');
+    if (char_ != NULL)
+    {
+        *module_length = char_ - module_field;
+        // Copy the module name into the module array
+        strncpy(module, module_field, *module_length);
+        module[*module_length] = '\0'; // add end of string
+        *ptr_module = module;
+    }
+}
 
-    if ((stringp == NULL) || (*stringp == NULL)) return NULL;
 
-    result = *stringp;
-
-    while (**stringp && !STD(strchr)(delim, **stringp)) ++*stringp;
-
-    if (**stringp)
-        *(*stringp)++ = '\0';
-    else
-        *stringp = NULL;
-
-    return result;
+static inline void extract_field_name(const char *module_field, char *field, int *field_length, char **ptr_field)
+{
+    // extract field name from string of the form <module>_<field>
+    char *char_ = strchr(module_field, '_');
+    if (char_ != NULL)
+    {
+        int length_prefix = char_ - module_field + 1;
+        *field_length = strlen(module_field) - length_prefix;
+        // Copy the field name into the module array
+        strncpy(field, module_field+length_prefix, *field_length);
+        field[*field_length] = '\0'; // add end of string
+        *ptr_field = field;
+    }
 }
 
 #ifdef __cplusplus
-}  // namespace std
+} /* extern "C" */
 #endif
-
-#undef STD
 
 #endif  // ACADOS_UTILS_STRSEP_H_

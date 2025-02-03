@@ -56,6 +56,8 @@ classdef AcadosOcpOptions < handle
         sim_method_jac_reuse
         sim_method_detect_gnsf
         time_steps
+        shooting_nodes
+        cost_scaling
         Tsim
         qp_solver              %  qp solver to be used in the NLP solver
         qp_solver_tol_stat
@@ -70,22 +72,29 @@ classdef AcadosOcpOptions < handle
         qp_solver_ric_alg
         qp_solver_mu0
         rti_log_residuals
+        rti_log_only_available_residuals
         print_level
         cost_discretization
         regularize_method
         reg_epsilon
-        shooting_nodes
         exact_hess_cost
         exact_hess_dyn
         exact_hess_constr
         fixed_hess
         ext_cost_num_hess
-        alpha_min
-        alpha_reduction
-        line_search_use_sufficient_descent
+        globalization_fixed_step_length
+        globalization_alpha_min
+        globalization_alpha_reduction
+        globalization_line_search_use_sufficient_descent
         globalization_use_SOC
-        full_step_dual
-        eps_sufficient_descent
+        globalization_full_step_dual
+        globalization_eps_sufficient_descent
+        globalization_funnel_init_increase_factor
+        globalization_funnel_init_upper_bound
+        globalization_funnel_sufficient_decrease_factor
+        globalization_funnel_kappa
+        globalization_funnel_fraction_switching_condition
+        globalization_funnel_initial_penalty_parameter
         hpipm_mode
         with_solution_sens_wrt_params
         with_value_sens_wrt_params
@@ -96,9 +105,14 @@ classdef AcadosOcpOptions < handle
         adaptive_levenberg_marquardt_mu_min
         adaptive_levenberg_marquardt_mu0
         log_primal_step_norm
+        store_iterates
         eval_residual_at_max_iter
 
+        timeout_max_time
+        timeout_heuristic
+
         ext_fun_compile_flags
+        ext_fun_expand
         model_external_shared_lib_dir
         model_external_shared_lib_name
         custom_update_filename
@@ -116,8 +130,9 @@ classdef AcadosOcpOptions < handle
             obj.integrator_type = 'ERK';
             obj.tf = [];
             obj.N_horizon = [];
-            obj.nlp_solver_type = 'SQP_RTI';
-            obj.nlp_solver_step_length = 1.0;
+            obj.nlp_solver_type = 'SQP';
+            obj.globalization_fixed_step_length = 1.0;
+            obj.nlp_solver_step_length = [];
             obj.nlp_solver_tol_stat = 1e-6;
             obj.nlp_solver_tol_eq = 1e-6;
             obj.nlp_solver_tol_ineq = 1e-6;
@@ -148,22 +163,33 @@ classdef AcadosOcpOptions < handle
             obj.qp_solver_ric_alg = 1;
             obj.qp_solver_mu0 = 0;
             obj.rti_log_residuals = 0;
+            obj.rti_log_only_available_residuals = 0;
             obj.print_level = 0;
             obj.cost_discretization = 'EULER';
             obj.regularize_method = 'NO_REGULARIZE';
             obj.reg_epsilon = 1e-4;
             obj.shooting_nodes = [];
+            obj.cost_scaling = [];
             obj.exact_hess_cost = 1;
             obj.exact_hess_dyn = 1;
             obj.exact_hess_constr = 1;
             obj.fixed_hess = 0;
             obj.ext_cost_num_hess = 0;
-            obj.alpha_min = [];
-            obj.alpha_reduction = [];
-            obj.line_search_use_sufficient_descent = 0;
+            obj.globalization_alpha_min = [];
+            obj.globalization_alpha_reduction = [];
+            obj.globalization_line_search_use_sufficient_descent = 0;
             obj.globalization_use_SOC = 0;
-            obj.full_step_dual = [];
-            obj.eps_sufficient_descent = [];
+            obj.globalization_full_step_dual = [];
+            obj.globalization_eps_sufficient_descent = [];
+
+            % funnel options
+            obj.globalization_funnel_init_increase_factor = 15;
+            obj.globalization_funnel_init_upper_bound = 1.0;
+            obj.globalization_funnel_sufficient_decrease_factor = 0.9;
+            obj.globalization_funnel_kappa = 0.9;
+            obj.globalization_funnel_fraction_switching_condition = 1e-3;
+            obj.globalization_funnel_initial_penalty_parameter = 1.0;
+
             obj.hpipm_mode = 'BALANCE';
             obj.with_solution_sens_wrt_params = 0;
             obj.with_value_sens_wrt_params = 0;
@@ -174,9 +200,20 @@ classdef AcadosOcpOptions < handle
             obj.adaptive_levenberg_marquardt_mu_min = 1e-16;
             obj.adaptive_levenberg_marquardt_mu0 = 1e-3;
             obj.log_primal_step_norm = 0;
+            obj.store_iterates = false;
             obj.eval_residual_at_max_iter = [];
+            obj.timeout_max_time = 0.;
+            obj.timeout_heuristic = 'ZERO';
 
-            obj.ext_fun_compile_flags = '-O2';
+            % check whether flags are provided by environment variable
+            env_var = getenv("ACADOS_EXT_FUN_COMPILE_FLAGS");
+            if isempty(env_var)
+                obj.ext_fun_compile_flags = '-O2';
+            else
+                obj.ext_fun_compile_flags = env_var;
+            end
+            obj.ext_fun_expand = false;
+
             obj.model_external_shared_lib_dir = [];
             obj.model_external_shared_lib_name = [];
             obj.custom_update_filename = '';
@@ -202,7 +239,7 @@ classdef AcadosOcpOptions < handle
 
         function s = convert_to_struct_for_json_dump(self, N)
             s = self.struct();
-            s = prepare_struct_for_json_dump(s, {'time_steps', 'shooting_nodes', 'sim_method_num_stages', 'sim_method_num_steps', 'sim_method_jac_reuse', 'custom_templates'}, {});
+            s = prepare_struct_for_json_dump(s, {'time_steps', 'shooting_nodes', 'cost_scaling', 'sim_method_num_stages', 'sim_method_num_steps', 'sim_method_jac_reuse', 'custom_templates'}, {});
         end
     end
 end

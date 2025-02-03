@@ -34,7 +34,7 @@ classdef AcadosOcpSolver < handle
     properties
         t_ocp % templated solver
         ocp % Matlab class AcadosOcp describing the OCP formulation
-        qp_gettable_fields = {'qp_Q', 'qp_R', 'qp_S', 'qp_q', 'qp_r', 'qp_A', 'qp_B', 'qp_b', 'qp_C', 'qp_D', 'qp_lg', 'qp_ug', 'qp_lbx', 'qp_ubx', 'qp_lbu', 'qp_ubu'}
+        qp_gettable_fields = {'qp_Q', 'qp_R', 'qp_S', 'qp_q', 'qp_r', 'qp_A', 'qp_B', 'qp_b', 'qp_C', 'qp_D', 'qp_lg', 'qp_ug', 'qp_lbx', 'qp_ubx', 'qp_lbu', 'qp_ubu', 'qp_zl', 'qp_zu', 'qp_Zl', 'qp_Zu'}
     end % properties
 
 
@@ -56,8 +56,6 @@ classdef AcadosOcpSolver < handle
             % generate
             check_dir_and_create(fullfile(pwd, ocp.code_export_directory));
             context = ocp.generate_external_functions();
-            context.finalize();
-            obj.ocp.casadi_pool_names = context.pool_names;
 
             ocp.dump_to_json()
             ocp.render_templates()
@@ -114,22 +112,28 @@ classdef AcadosOcpSolver < handle
 
                 if length(varargin) > 0
                     n = varargin{1};
-                    Q = obj.get('qp_Q', n);
-                    R = obj.get('qp_R', n);
-                    S = obj.get('qp_S', n);
 
-                    value = [R, S; S', Q];
+                    if n < obj.ocp.solver_options.N_horizon
+                        Q = obj.get('qp_Q', n);
+                        R = obj.get('qp_R', n);
+                        S = obj.get('qp_S', n);
+
+                        value = [R, S; S', Q];
+                    else
+                        value = obj.get('qp_Q', n);
+                    end
+
                     return;
                 else
                     value = cell(obj.ocp.solver_options.N_horizon, 1);
-                    for n=0:obj.ocp.solver_options.N_horizon
+                    for n=0:(obj.ocp.solver_options.N_horizon-1)
                         Q = obj.get('qp_Q', n);
                         R = obj.get('qp_R', n);
                         S = obj.get('qp_S', n);
 
                         value{n+1} = [R, S; S', Q];
-
                     end
+                    value{end+1} = obj.get('qp_Q', obj.ocp.solver_options.N_horizon);
                     return;
                 end
             elseif strcmp('pc_hess_block', field)
@@ -179,6 +183,58 @@ classdef AcadosOcpSolver < handle
             obj.t_ocp.load_iterate(filename);
         end
 
+        function iterate = get_iterate(obj, iteration)
+            if iteration > obj.get('nlp_iter')
+                error("iteration needs to be nonnegative and <= nlp_iter.");
+            end
+
+            if ~obj.ocp.solver_options.store_iterates
+                error("get_iterate: the solver option store_iterates needs to be true in order to get iterates.");
+            end
+
+            if strcmp(obj.ocp.solver_options.nlp_solver_type, 'SQP_RTI')
+                error("get_iterate: SQP_RTI not supported.");
+            end
+
+            N_horizon = obj.ocp.solver_options.N_horizon;
+
+            x_traj = cell(N_horizon + 1, 1);
+            u_traj = cell(N_horizon, 1);
+            z_traj = cell(N_horizon, 1);
+            sl_traj = cell(N_horizon + 1, 1);
+            su_traj = cell(N_horizon + 1, 1);
+            pi_traj = cell(N_horizon, 1);
+            lam_traj = cell(N_horizon + 1, 1);
+
+            for n=1:N_horizon
+                x_traj{n, 1} = obj.t_ocp.get('x', n-1, iteration);
+                u_traj{n, 1} = obj.t_ocp.get('u', n-1, iteration);
+                z_traj{n, 1} = obj.t_ocp.get('z', n-1, iteration);
+                sl_traj{n, 1} = obj.t_ocp.get('sl', n-1, iteration);
+                su_traj{n, 1} = obj.t_ocp.get('su', n-1, iteration);
+                pi_traj{n, 1} = obj.t_ocp.get('pi', n-1, iteration);
+                lam_traj{n, 1} = obj.t_ocp.get('lam', n-1, iteration);
+            end
+
+            x_traj{N_horizon+1, 1} = obj.t_ocp.get('x', N_horizon, iteration);
+            sl_traj{N_horizon+1, 1} = obj.t_ocp.get('sl', N_horizon, iteration);
+            su_traj{N_horizon+1, 1} = obj.t_ocp.get('su', N_horizon, iteration);
+            lam_traj{N_horizon+1, 1} = obj.t_ocp.get('lam', N_horizon, iteration);
+
+            iterate = AcadosOcpIterate(x_traj, u_traj, z_traj, ...
+                    sl_traj, su_traj, pi_traj, lam_traj);
+        end
+
+        function iterates = get_iterates(obj)
+            nlp_iter = obj.get('nlp_iter');
+            iterates_cell = cell(nlp_iter+1, 1);
+
+            for n=1:(nlp_iter+1)
+                iterates_cell{n} = obj.get_iterate(n-1);
+            end
+
+            iterates = AcadosOcpIterates(iterates_cell);
+        end
 
         function print(obj, varargin)
             obj.t_ocp.print(varargin{:});
@@ -195,9 +251,13 @@ classdef AcadosOcpSolver < handle
             % result = ocp_solver.qp_diagnostics([partially_condensed_qp=false])
 
             % returns a struct with the following fields:
-            % - min_ev: minimum eigenvalue for each Hessian block.
-            % - max_ev: maximum eigenvalue for each Hessian block.
-            % - condition_number: condition number for each Hessian block.
+            % - min_eigv_stage: array with minimum eigenvalue for each Hessian block.
+            % - max_eigv_stage: array with maximum eigenvalue for each Hessian block.
+            % - condition_number_stage: array with condition number for each Hessian block.
+            % - min_eigv_global: minimum eigenvalue for the full Hessian.
+            % - min_abs_eigv_global: minimum absolute eigenvalue for the full Hessian.
+            % - max_eigv_global: maximum eigenvalue for the full Hessian.
+            % - max_abs_eigv_global: maximum absolute eigenvalue for the full Hessian.
             % - condition_number_global: condition number for the full Hessian.
 
             if length(varargin) > 0
@@ -212,9 +272,13 @@ classdef AcadosOcpSolver < handle
                 num_blocks = obj.ocp.dims.N + 1;
             end
             result = struct();
-            result.min_ev = zeros(num_blocks, 1);
-            result.max_ev = zeros(num_blocks, 1);
-            result.condition_number = zeros(num_blocks, 1);
+            result.min_eigv_stage = zeros(num_blocks, 1);
+            result.max_eigv_stage = zeros(num_blocks, 1);
+            result.condition_number_stage = zeros(num_blocks, 1);
+            min_abs_val = inf;
+            max_abs_val = -inf;
+            max_ev = -inf;
+            min_ev = inf;
 
             for n=1:num_blocks
                 if partially_condensed_qp
@@ -223,11 +287,19 @@ classdef AcadosOcpSolver < handle
                     hess_block = obj.get('hess_block', n-1);
                 end
                 eigvals = eig(hess_block);
-                result.min_ev(n) = min(eigvals);
-                result.max_ev(n) = max(eigvals);
-                result.condition_number_blockwise(n) = max(eigvals) / min(eigvals);
+                max_ev = max(max_ev, max(eigvals));
+                max_abs_val = max(max_abs_val, max(abs(eigvals)));
+                min_ev = min(min_ev, min(eigvals));
+                min_abs_val = min(min_abs_val, min(abs(eigvals)));
+                result.min_eigv_stage(n) = min(eigvals);
+                result.max_eigv_stage(n) = max(eigvals);
+                result.condition_number_stage(n) = max(eigvals) / min(eigvals);
             end
-            result.condition_number_global = max(result.max_ev) / min(result.min_ev);
+            result.condition_number_global = max_abs_val / min_abs_val;
+            result.max_eigv_global = max_ev;
+            result.max_abs_eigv_global = max_abs_val;
+            result.min_eigv_global = min_ev;
+            result.min_abs_eigv_global = min_abs_val;
         end
 
 
@@ -245,8 +317,17 @@ classdef AcadosOcpSolver < handle
                     val = obj.get(field, i);
                     qp_data = setfield(qp_data, key, val);
                 end
-
-                if strcmp(field, 'qp_Q') || strcmp(field, 'qp_q')
+                if strcmp(field, 'qp_Q') || ...
+                   strcmp(field, 'qp_q') || ...
+                   strcmp(field, 'qp_C') || ...
+                   strcmp(field, 'qp_lg') || ...
+                   strcmp(field, 'qp_ug') || ...
+                   strcmp(field, 'qp_lbx') || ...
+                   strcmp(field, 'qp_ubx') || ...
+                   strcmp(field, 'qp_zl') || ...
+                   strcmp(field, 'qp_zu') || ...
+                   strcmp(field, 'qp_Zl') || ...
+                   strcmp(field, 'qp_Zu')
                     s_indx = sprintf(strcat('%0', num2str(lN), 'd'), obj.ocp.solver_options.N_horizon);
                     key = strcat(field, '_', s_indx);
                     val = obj.get(field, obj.ocp.solver_options.N_horizon);

@@ -51,6 +51,7 @@ classdef acados_ocp_opts < handle
             obj.opts_struct.shooting_nodes = [];
             obj.opts_struct.time_steps = [];
             obj.opts_struct.parameter_values = [];
+            obj.opts_struct.p_global_values = [];
 
             obj.opts_struct.nlp_solver = 'sqp';
             obj.opts_struct.nlp_solver_exact_hessian = 'false';
@@ -60,21 +61,21 @@ classdef acados_ocp_opts < handle
             obj.opts_struct.nlp_solver_tol_ineq = 1e-6;
             obj.opts_struct.nlp_solver_tol_comp = 1e-6;
             obj.opts_struct.nlp_solver_ext_qp_res = 0; % compute QP residuals at each NLP iteration
-            obj.opts_struct.nlp_solver_step_length = 1.0; % fixed step length in SQP algorithm
+            obj.opts_struct.globalization_fixed_step_length = 1.0;
             obj.opts_struct.qp_solver = 'partial_condensing_hpipm';
             % globalization
             obj.opts_struct.globalization = 'fixed_step';
-            obj.opts_struct.alpha_min = 0.05;
-            obj.opts_struct.alpha_reduction = 0.7;
-            obj.opts_struct.line_search_use_sufficient_descent = 0;
+            obj.opts_struct.globalization_alpha_min = 0.05;
+            obj.opts_struct.globalization_alpha_reduction = 0.7;
+            obj.opts_struct.globalization_line_search_use_sufficient_descent = 0;
             obj.opts_struct.globalization_use_SOC = 0;
-            obj.opts_struct.full_step_dual = 0;
-            obj.opts_struct.eps_sufficient_descent = 1e-4;
+            obj.opts_struct.globalization_full_step_dual = 0;
+            obj.opts_struct.globalization_eps_sufficient_descent = 1e-4;
 
             obj.opts_struct.qp_solver_iter_max = 50;
             obj.opts_struct.qp_solver_mu0 = 0;
+            obj.opts_struct.store_iterates = false;
 
-            % obj.opts_struct.qp_solver_cond_N = 5; % New horizon after partial condensing
             obj.opts_struct.qp_solver_cond_ric_alg = 1; % 0: dont factorize hessian in the condensing; 1: factorize
             obj.opts_struct.qp_solver_ric_alg = 1; % HPIPM specific
             obj.opts_struct.qp_solver_warm_start = 0;
@@ -86,6 +87,7 @@ classdef acados_ocp_opts < handle
             obj.opts_struct.sim_method_num_stages = 4;
             obj.opts_struct.sim_method_num_steps = 1;
             obj.opts_struct.sim_method_newton_iter = 3;
+            obj.opts_struct.sim_method_newton_tol = 0;
             obj.opts_struct.sim_method_jac_reuse = 0;
             obj.opts_struct.gnsf_detect_struct = 'true';
             obj.opts_struct.regularize_method = 'no_regularize';
@@ -97,9 +99,21 @@ classdef acados_ocp_opts < handle
             obj.opts_struct.exact_hess_cost = 1;
             obj.opts_struct.exact_hess_constr = 1;
             obj.opts_struct.fixed_hess = 0;
-            obj.opts_struct.ext_fun_compile_flags = '-O2';
+
+            obj.opts_struct.timeout_max_time = 0;
+            obj.opts_struct.timeout_heuristic = 'ZERO';
+
+            % check whether flags are provided by environment variable
+            env_var = getenv("ACADOS_EXT_FUN_COMPILE_FLAGS");
+            if isempty(env_var)
+                obj.opts_struct.ext_fun_compile_flags = '-O2';
+            else
+                obj.opts_struct.ext_fun_compile_flags = env_var;
+            end
+            obj.opts_struct.ext_fun_expand = false;
 
             obj.opts_struct.output_dir = fullfile(pwd, 'build');
+            obj.opts_struct.json_file = 'acados_ocp_nlp.json';
             % if ismac()
             %     obj.opts_struct.output_dir = '/usr/local/lib';
             % end
@@ -152,8 +166,8 @@ classdef acados_ocp_opts < handle
                 obj.opts_struct.nlp_solver_tol_comp = value;
             elseif (strcmp(field, 'nlp_solver_ext_qp_res'))
                 obj.opts_struct.nlp_solver_ext_qp_res = value;
-            elseif (strcmp(field, 'nlp_solver_step_length'))
-                obj.opts_struct.nlp_solver_step_length = value;
+            elseif (strcmp(field, 'globalization_fixed_step_length') || strcmp(field, 'nlp_solver_step_length'))
+                obj.opts_struct.globalization_fixed_step_length = value;
             elseif (strcmp(field, 'nlp_solver_warm_start_first_qp'))
                 obj.opts_struct.nlp_solver_warm_start_first_qp = value;
             elseif (strcmp(field, 'qp_solver'))
@@ -188,6 +202,8 @@ classdef acados_ocp_opts < handle
                 obj.opts_struct.sim_method_num_steps = value;
             elseif (strcmp(field, 'sim_method_newton_iter'))
                 obj.opts_struct.sim_method_newton_iter = value;
+            elseif (strcmp(field, 'sim_method_newton_tol'))
+                obj.opts_struct.sim_method_newton_tol = value;
             elseif (strcmp(field, 'sim_method_exact_z_output'))
                 obj.opts_struct.sim_method_exact_z_output = value;
             elseif (strcmp(field, 'sim_method_jac_reuse'))
@@ -204,24 +220,36 @@ classdef acados_ocp_opts < handle
                 obj.opts_struct.print_level = value;
             elseif (strcmp(field, 'levenberg_marquardt'))
                 obj.opts_struct.levenberg_marquardt = value;
-            elseif (strcmp(field, 'alpha_min'))
-                obj.opts_struct.alpha_min = value;
-            elseif (strcmp(field, 'alpha_reduction'))
-                obj.opts_struct.alpha_reduction = value;
-            elseif (strcmp(field, 'line_search_use_sufficient_descent'))
-                obj.opts_struct.line_search_use_sufficient_descent = value;
+            elseif (strcmp(field, 'globalization_alpha_min') || strcmp(field, 'alpha_min'))
+                obj.opts_struct.globalization_alpha_min = value;
+            elseif (strcmp(field, 'globalization_alpha_reduction') || strcmp(field, 'alpha_reduction'))
+                obj.opts_struct.globalization_alpha_reduction = value;
+            elseif (strcmp(field, 'globalization_line_search_use_sufficient_descent') || strcmp(field, 'line_search_use_sufficient_descent'))
+                obj.opts_struct.globalization_line_search_use_sufficient_descent = value;
             elseif (strcmp(field, 'globalization_use_SOC'))
                 obj.opts_struct.globalization_use_SOC = value;
-            elseif (strcmp(field, 'full_step_dual'))
-                obj.opts_struct.full_step_dual = value;
-            elseif (strcmp(field, 'eps_sufficient_descent'))
-                obj.opts_struct.eps_sufficient_descent = value;
+            elseif (strcmp(field, 'globalization_full_step_dual') || strcmp(field, 'full_step_dual'))
+                obj.opts_struct.globalization_full_step_dual = value;
+            elseif (strcmp(field, 'globalization_eps_sufficient_descent') || strcmp(field, 'eps_sufficient_descent'))
+                obj.opts_struct.globalization_eps_sufficient_descent = value;
             elseif (strcmp(field, 'globalization'))
                 obj.opts_struct.globalization = value;
             elseif (strcmp(field, 'parameter_values'))
                 obj.opts_struct.parameter_values = value;
+            elseif (strcmp(field, 'p_global_values'))
+                obj.opts_struct.p_global_values = value;
+            elseif (strcmp(field, 'store_iterates'))
+                obj.opts_struct.store_iterates = value;
             elseif (strcmp(field, 'ext_fun_compile_flags'))
                 obj.opts_struct.ext_fun_compile_flags = value;
+            elseif (strcmp(field, 'ext_fun_expand'))
+                obj.opts_struct.ext_fun_expand = value;
+            elseif (strcmp(field, 'json_file'))
+                obj.opts_struct.json_file = value;
+            elseif (strcmp(field, 'timeout_max_time'))
+                obj.opts_struct.timeout_max_time = value;
+            elseif (strcmp(field, 'timeout_heuristic'))
+                obj.opts_struct.timeout_heuristic = value;
             elseif (strcmp(field, 'compile_mex'))
                 disp(['Option compile_mex is not supported anymore,'...
                     'please use compile_interface instead or dont set the option.', ...

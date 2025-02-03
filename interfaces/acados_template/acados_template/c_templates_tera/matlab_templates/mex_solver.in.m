@@ -50,18 +50,14 @@ classdef {{ name }}_mex_solver < handle
             addpath('.')
             obj.N = {{ solver_options.N_horizon }};
             obj.name = '{{ name }}';
-            obj.code_gen_dir = pwd();
         end
 
         % destructor
         function delete(obj)
             disp("delete template...");
-            return_dir = pwd();
-            cd(obj.code_gen_dir);
             if ~isempty(obj.C_ocp)
                 acados_mex_free_{{ name }}(obj.C_ocp);
             end
-            cd(return_dir);
             disp("done.");
         end
 
@@ -141,8 +137,12 @@ classdef {{ name }}_mex_solver < handle
             elseif nargin==3
                 stage = varargin{3};
                 value = ocp_get(obj.C_ocp, field, stage);
+            elseif nargin==4
+                stage = varargin{3};
+                iteration = varargin{4};
+                value = ocp_get(obj.C_ocp, field, stage, iteration);
             else
-                disp('acados_ocp.get: wrong number of input arguments (1 or 2 allowed)');
+                disp('acados_ocp.get: wrong number of input arguments (1, 2 or 3 allowed)');
             end
 
 
